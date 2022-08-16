@@ -1,0 +1,1553 @@
+---
+title: "ED50 calculation"
+author: "Marzonie et al."
+date: "1/08/2022"
+output: html_document
+---
+
+# 1. Experimental metadata
+```{r message = FALSE}
+library(nlme)
+library(aomisc)
+library(emmeans)
+library(ggpubr)
+library(tidyverse)
+
+load(file = "1_data/psii_metadata.RData") 
+psii = psii %>% mutate(Species = factor(Species, levels = c("A. cf humilis", "P. meandrina", "P. verrucosa")))
+head(psii)
+
+```
+
+We've combined data from the sampling of coral nubbins, experimental data and results, with long-term environmental data into a single data frame for analysis. The data include the following information: 
+
+*Geographic metadata*
+Region:             Bioregions reflective of the biogeoraphy of coral and fish diversity in the Coral Sea Marine Park
+Reef:               Distinct coral reef groups
+Site:               Sampling site
+
+*Sampling metadata*
+Date:               Date of collection
+Species:            Species name. Pocillopora confirmed using RFLP
+Depth:              Collection depth
+Bleaching:          Bleaching category 1 (bleached) to 6 (healthy)
+catBleaching:       Bleaching category grouping (Poor: 1&2, Fair: 3&4, Good:5&6)
+
+*Experimental metadata*
+Treatment:          Temperature treatment
+Tank:               Tank within treatment jackets, 3 tanks per jacket
+Rack:               Rack within Tank
+Clip:               Clip on rack
+Vial:               Unique identification number for each coral genet
+
+*Experimental measurements*
+max.yield:          maximum measurement of PSII activity from 3 measures
+mean.yield:         mean measurement of PSII activity from 3 measures
+median.yield:       median measurement of PSII activity from 3 measures
+sd.yield:           standard deviation of PSII activity from 3 measures
+
+*Treatment data*
+TargetTemp:         Target treatment temperature
+Temperature:        Average measured treatment temperature
+sd.Temperature:     Standard deviation of measured treatment temperature
+
+*NOAA Coral Reef Watch metadata*
+MMM:                Local Maximum Monthly Mean sea surface temperature at the time of sampling
+MMM_dev:            Deviation from MM at the time of sampling
+DHW:                Degree Heating Weeks at the time of sampling
+
+*RmarineHeatWaves metadata (based on NOAA CRW SST data)*
+duration:           Heatwave duration (days)
+int_mean:           Mean intensity
+int_max:            Max intensity
+int_cum:            Cumulative intensity
+
+
+
+
+# 2. Dose Response curves
+In order to run a log logistic regression on the experimental data and identify differences between species we need to make sure all species have a common set of reefs and enough samples from each reef and bleaching categories to explore the effects of any interactions. So we'll create two new data frames, one for model exploration/selection (psii.1) and another for the comparison between species (psii.2). These exclude some reefs where sample sizes were low.
+
+```{r}
+#How many samples from each Species/Reef. This will include all fragments (sum of all fragments, NOT individual genotypes)
+psii %>% group_by(Species, Reef) %>% 
+  dplyr::summarise(n = dplyr::n()) %>% 
+  spread(key = Species, value = n)
+
+#Creating a subset of the data for model selection
+psii.1 = psii %>% filter(! Reef %in% c("Saumarez", "Frederick", "Chilcott", "Wreck")) %>%
+  mutate(Reef = factor(Reef)) %>%
+  mutate(Species = factor(Species)) %>% 
+  droplevels() %>% 
+  as.data.frame()
+
+#Creating a subset of the data for model selection
+psii.2 = psii %>% filter(! Reef %in% c("Saumarez", "Frederick")) %>%
+  mutate(Reef = factor(Reef)) %>%
+  mutate(Species = factor(Species)) %>% 
+  droplevels() %>% 
+  as.data.frame()
+```
+
+
+#Table 1. Number of individual corals collected from each reef AND used in the model. 
+```{r}
+#count of how many individuals were collected per reef 
+table1 = psii %>% group_by(Species, Reef, Vial) %>% 
+dplyr::summarise() %>% 
+  group_by(Species, Reef) %>% 
+  dplyr::summarise(ln = n()) %>% 
+  spread(Species, ln) 
+table1
+```
+```{r}
+psii %>% group_by(Species, Reef, Treatment) %>% 
+  summarise(mean = round(mean(median.yield),2)) %>% 
+  spread(key = Treatment, value = mean)
+
+psii %>% group_by(Species, Reef, Treatment) %>% 
+  summarise(mean = round(sd(median.yield),2)) %>% 
+  spread(key = Treatment, value = mean)
+```
+
+
+### Results 3.2 Differences in Fv/Fm observed in different treatments 
+```{r}
+#reporting differences among treatments in results section 3.2
+psii.2 %>% 
+  dplyr::group_by(Treatment) %>% 
+  summarise(med.treat = mean(median.yield), sd.treat = sd(median.yield), median.treat = median(median.yield))
+
+
+```
+
+
+Assuming a fixed lower asymptote representing complete loss of photosynthetic yield, a three parameter log-logistic model can be assumed, estimating the upper asymptote, the location of the inflection point (PSII-50), and steepness of the curve whereby:
+
+b is the slope around the inflection point
+d is the upper asymptote, 
+e is the inflection point (PSII-50)
+
+
+## 2.1 Model selection : SPECIES
+
+### What parameters to estimate?
+Our primary interest is in the inflection point (e or ED50) but other parameter estimates may be important and may vary among species. We anticipate most of the variation in a species response to temperature treatment at this scale will occur at the Reef level so we included Reef as a random factor to explore the importance of parameter estimates
+
+```{r}
+#Naive model to identify starting points
+# Model Parameters:  b = shape parameter (i.e steepness); d=upper limit; e=ED50
+modNaive.Species <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = psii.1,
+            curveid = Species,
+            pmodels = c( ~ 1,  ~ 1,  ~ Species), bcVal = 0.5)
+
+species.1 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = psii.1,
+                    random = e ~ 1|Reef,
+                    fixed = list(b ~ 1, d ~ 1, e ~ Species),
+                    start = coef(modNaive.Species), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+modNaive.Species <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = psii.1,
+            curveid = Species,
+            pmodels = c( ~ 1,  ~ Species,  ~ Species), bcVal = 0.5)
+
+species.2 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = psii.1,
+                    random = e ~ 1|Reef,
+                    fixed = list(b ~ 1, d ~ Species, e ~ Species),
+                    start = coef(modNaive.Species), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+modNaive.Species <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = psii.1,
+            curveid = Species,
+            pmodels = c( ~ Species,  ~ 1,  ~ Species), bcVal = 0.5)
+
+species.3 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = psii.1,
+                    random = e ~ 1|Reef,
+                    fixed = list(b ~ Species, d ~ 1, e ~ Species),
+                    start = coef(modNaive.Species), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+modNaive.Species <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = psii.1,
+            curveid = Species,
+            pmodels = c( ~ Species,  ~ Species,  ~ Species), bcVal = 0.5)
+
+species.4 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = psii.1,
+                    random = e ~ 1|Reef,
+                    fixed = list(b ~ Species, d ~ Species, e ~ Species),
+                    start = coef(modNaive.Species), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+AIC(species.1,species.2,species.3, species.4)
+```
+The more complex model that estimates all 3 parameters (species.4) is the best model. However, it may be necessary to reduce the complexity of the model when accounting for other random factors in the model, in which case estimating d and e provide the best result (species.2). For example, when accounting for Depth and Tank effects, the models are too complex to also estimate b.
+
+### Accounting for Depth effects
+```{r}
+modNaive.Species <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = psii.1,
+            curveid = Species,
+            pmodels = c( ~ 1,  ~ Species,  ~ Species), bcVal = 0.5)
+
+species.5 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = psii.1,
+                    random = e ~ 1|Reef/Depth,
+                    fixed = list(b ~ 1, d ~ Species, e ~ Species),
+                    start = coef(modNaive.Species), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+AIC(species.2,species.5) 
+anova(species.2, species.5)
+```
+Depth does not need to be accounted for.
+
+### Accounting for Tank effects
+```{r}
+modNaive.Species <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = psii.1,
+            curveid = Species,
+            pmodels = c( ~ 1,  ~ Species,  ~ Species), bcVal = 0.5)
+
+species.6 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = psii.1,
+                    random = e ~ 1|Reef/Tank,
+                    fixed = list(b ~ 1, d ~ Species, e ~ Species),
+                    start = coef(modNaive.Species), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+AIC(species.2,species.6)
+anova(species.2, species.6)
+```
+Tank does not need to be accounted for.
+
+### Accounting for bleaching
+Introduce an interaction between Species and Bleaching categories. We explore the interaction only for d and e. 
+```{r}
+#effect of bleached samples on e
+modNaive.Species <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = psii.1,
+            curveid = Species:catBleaching,
+            pmodels = c( ~ 1,  ~ Species,  ~ Species*catBleaching), bcVal = 0.5)
+
+species.7 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = psii.1,
+                    random = e ~ 1|Reef,
+                    fixed = list(b ~ 1, d ~ Species, e ~ Species*catBleaching),
+                    start = coef(modNaive.Species), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+#effect of bleached samples on d
+modNaive.Species <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = psii.1,
+            curveid = Species:catBleaching,
+            pmodels = c( ~ 1,  ~ Species*catBleaching,  ~ Species), bcVal = 0.5)
+
+species.8 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = psii.1,
+                    random = e ~ 1|Reef,
+                    fixed = list(b ~ 1, d ~ Species*catBleaching, e ~ Species),
+                    start = coef(modNaive.Species), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+#effect of bleached samples on d and e
+modNaive.Species <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = psii.1,
+            curveid = Species:catBleaching,
+            pmodels = c( ~ 1,  ~ Species*catBleaching,  ~ Species*catBleaching), bcVal = 0.5)
+
+species.9 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = psii.1,
+                    random = e ~ 1|Reef,
+                    fixed = list(b ~ 1, d ~ Species*catBleaching, e ~ Species*catBleaching),
+                    start = coef(modNaive.Species), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+#check random factors on d and e
+species.9.1 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = psii.1,
+                    random = d + e ~ 1|Reef,
+                    fixed = list(b ~ 1, d ~ Species*catBleaching, e ~ Species*catBleaching),
+                    start = coef(modNaive.Species), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+
+AIC(species.2, species.7, species.8, species.9, species.9.1)
+
+anova(species.2,species.9.1)
+anova(species.9.1) # interaction is significant
+```
+The interaction between bleaching categories and species is important and improves the model so we need to control for the level of bleaching of sampled nubbins. The effect on e and d is small but should not be ignored. If we look at the contrast below, the species differences change depending on the bleaching category. 
+
+
+```{r}
+#The effect of including the interaction between species and catBleaching on d and e is small 
+emmeans(species.9.1,pairwise~catBleaching|Species, param="d", level = 0.95)$emmeans %>% plot(comparisons = TRUE)
+emmeans(species.9.1,pairwise~catBleaching|Species, param="e", level = 0.95)$emmeans %>% plot(comparisons = TRUE)
+
+#The contrast show how bleaching can affect the species comparisons
+emmeans(species.9.1,pairwise~catBleaching|Species, param="d", level = 0.95)$contrast %>% plot()
+emmeans(species.9.1,pairwise~Species|catBleaching, param="d", level = 0.95)$contrast %>% plot()
+emmeans(species.9.1,pairwise~catBleaching|Species, param="e", level = 0.95)$contrast %>% plot()
+emmeans(species.9.1,pairwise~Species|catBleaching, param="e", level = 0.95)$contrast %>% plot()
+```
+Note: The blue bars are confidence intervals for the EMMs, and the red arrows are for the comparisons among them. If an arrow from one mean overlaps an arrow from another group, the difference is not “significant,” based on the adjust setting (which defaults to "tukey") and the value of alpha (which defaults to 0.05). (https://cran.r-project.org/web/packages/emmeans/vignettes/comparisons.html). 
+
+
+## 2.2 Model predictions: Species*Bleaching
+```{r}
+#including larger subset of reefs (psii.2)
+modNaive.Species <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = psii.2,
+            curveid = Species:catBleaching,
+            pmodels = c( ~ 1,  ~ Species*catBleaching,  ~ Species*catBleaching), bcVal = 0.5)
+
+species.9.2 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = psii.2,
+                    random = d + e ~ 1|Reef,
+                    fixed = list(b ~ 1, d ~ Species*catBleaching, e ~ Species*catBleaching),
+                    start = coef(modNaive.Species), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+```
+
+```{r}
+#Chilcott and Wreck have a strong effect on parameter estimates of e and d for each species particularly for A. cf humilis
+emmeans(species.9.1, ~Species, param = 'e')
+emmeans(species.9.2, ~Species, param = 'e')
+emmeans(species.9.1, ~Species, param = 'd')
+emmeans(species.9.2, ~Species, param = 'd')
+```
+
+```{r}
+#what about the slope b
+modNaive.Species <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = psii.2,
+            curveid = Species:catBleaching,
+            pmodels = c( ~ Species*catBleaching,  ~ Species*catBleaching,  ~ Species*catBleaching), bcVal = 0.5)
+
+species.9.3 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = psii.2,
+                    random = b + d + e ~ 1|Reef,
+                    fixed = list(b ~ Species*catBleaching, d ~ Species*catBleaching, e ~ Species*catBleaching),
+                    start = coef(modNaive.Species), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+modNaive.Species <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = psii.2,
+            curveid = Species:catBleaching,
+            pmodels = c( ~ Species,  ~ Species*catBleaching,  ~ Species*catBleaching), bcVal = 0.5)
+
+#Does not run
+#species.9.4 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = psii.2,
+#                    random = b + d + e ~ 1|Reef,
+#                    fixed = list(b ~ Species, d ~ Species*catBleaching, e ~ Species*catBleaching),
+#                    start = coef(modNaive.Species), 
+#                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+modNaive.Species <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = psii.2,
+            curveid = Species:catBleaching,
+            pmodels = c( ~ catBleaching,  ~ Species*catBleaching,  ~ Species*catBleaching), bcVal = 0.5)
+
+species.9.5 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = psii.2,
+                    random = b + d + e ~ 1|Reef,
+                    fixed = list(b ~ catBleaching, d ~ Species*catBleaching, e ~ Species*catBleaching),
+                    start = coef(modNaive.Species), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+AIC(species.9.2, species.9.3, species.9.5)
+anova(species.9.2, species.9.3)
+```
+Species also have different slopes and so it is important that we consider this in our model. Significant improvements to model fit with species.9.3
+
+
+### Estimated marginal mean & pairwise contrasts 
+#### parameter e
+```{r}
+my.model1 = species.9.3
+load("3_outputs/nlme_All species.RData")
+my.data1 = psii.2
+
+emmeans(my.model1, ~Species, param = 'e', level = 0.95) %>% plot(comparisons = TRUE)
+emmeans(my.model1, pairwise~Species, param = 'e', level = 0.95)$contrast %>% plot()
+```
+The differences in the inflection point (e, ED50) between species are significant. 
+```{r}
+emmeans(my.model1, pairwise~Species, param = 'e', level = 0.95)$contrast    #ED50 contrasts 
+emmeans(my.model1, ~Species, param = 'e', level = 0.95) 
+```
+
+#### parameter d
+```{r}
+emmeans(my.model1, ~Species, param = 'd', level = 0.95) %>% plot(comparisons = TRUE)
+emmeans(my.model1, pairwise~Species, param = 'd', level = 0.95)$contrast %>% plot()
+```
+A. cf humilis has lower upper asymptote than either P. meandrina or P. verrucosa. There is no observable difference between Pocilloporids. 
+```{r}
+emmeans(my.model1, pairwise~Species, param = 'd', level = 0.95)$contrast    #ED50 contrasts 
+```
+
+#### parameter b
+```{r}
+emmeans(my.model1, ~Species, param = 'b', level = 0.95) %>% plot(comparisons = TRUE)
+emmeans(my.model1, pairwise~Species, param = 'b', level = 0.95)$contrast %>% plot()
+```
+A. cf humilis has slacker slope than either P. meandrina or P. verrucosa. The condition of A. cf humilis may have dropped at lower temps. There is no observable difference between Pocilloporids. 
+```{r}
+emmeans(my.model1, pairwise~Species, param = 'b', level = 0.95)$contrast    #ED50 contrasts 
+```
+
+#### catBleaching interaction
+```{r}
+#Including bleaching
+emmeans(my.model1, ~catBleaching|Species, param = 'e', level = 0.95) %>% plot()
+emmeans(my.model1, ~catBleaching|Species, param = 'd', level = 0.95) %>% plot()
+emmeans(my.model1, ~catBleaching|Species, param = 'b', level = 0.95) %>% plot()
+```
+catBleaching has its strongest effect on d within species, whereby colonies that started in a poorer condition have lower values of median PSII yield.
+
+
+### SOM Tables S4 and S4: Species Pairwise Contrasts and Emmeans 
+```{r}
+emmeans(my.model1, pairwise~Species, param = 'e', level = 0.95)$contrast    #ED50 contrasts 
+emmeans(my.model1, pairwise~Species, param = 'd', level = 0.95)$contrast    #ED50 contrasts 
+emmeans(my.model1, pairwise~Species, param = 'b', level = 0.95)$contrast    #ED50 contrasts 
+emmeans(my.model1, ~Species, param = 'e', level = 0.95) 
+```
+
+
+### Model check
+```{r}
+resid(my.model1) %>% plot()
+VarCorr(my.model1)
+ranef(my.model1)
+#coef(my.model1)
+#vcov(my.model1)
+```
+
+
+## 2.3 Figure: Species comparison
+```{r}
+##Create predictions data frame
+predframe.spp = with(my.data1, 
+                     expand.grid(Species = levels(Species),
+                                 catBleaching = levels(catBleaching),
+                                 MMM_dev=seq(min(MMM_dev), max(MMM_dev) + 1, 0.1)))
+
+#Adding confidence intervals
+prdc.spp = as.data.frame(nlraa::predict_nlme(my.model1, newdata = predframe.spp, 
+                                           interval = "confidence", level = 0.95))
+
+prdc.spp$Species = predframe.spp$Species
+prdc.spp$MMM_dev = predframe.spp$MMM_dev
+prdc.spp$catBleaching = predframe.spp$catBleaching
+
+#Averaging predictions across catBleaching
+prdc.average = prdc.spp %>% dplyr::select(-catBleaching) %>%
+  group_by(Species, MMM_dev) %>% summarise_all(.funs=mean)
+
+# Predict ED50 for each species
+ED50spp = emmeans(my.model1, ~Species|catBleaching, param= "e") %>% as_tibble()
+
+predframe.ED50 = ED50spp %>% dplyr::select(Species, catBleaching, emmean) %>% 
+  dplyr::rename(MMM_dev = emmean)
+  
+prdc.ED50 = as.data.frame(nlraa::predict_nlme(my.model1, newdata = predframe.ED50, 
+                                           interval = "confidence", level = 0.95))
+prdc.ED50 = bind_cols(predframe.ED50, prdc.ED50)
+
+prdc.ED50.average = prdc.ED50 %>% dplyr::select(-catBleaching) %>%
+  group_by(Species) %>% summarise_all(.funs=mean)
+```
+
+
+#### Fig 2A: PSII comparison by species
+```{r}
+library(wesanderson)
+col = wes_palette("GrandBudapest1", 4, type = "continuous")
+
+Species.plot = ggplot() +
+  geom_segment(data = prdc.ED50.average, aes(x = MMM_dev, xend = MMM_dev, y = -Inf, 
+                                             yend = Estimate , color = Species), 
+                  linetype = 1, size = .3) +
+  geom_point(data=psii.1, aes(x=MMM_dev, y=median.yield, col=Species), alpha=0.1, size = 1) +
+  geom_line(data = prdc.average, aes(colour=Species, y=Estimate, x=MMM_dev), size = .3) +
+  geom_ribbon(data=prdc.average, aes(x = MMM_dev, ymin = Q2.5, ymax = Q97.5, fill = Species), 
+              alpha = 0.5, show.legend = FALSE) +
+  geom_point(data = prdc.ED50.average, aes(x = MMM_dev, y = Estimate, fill = Species),
+             size = 1.5, stroke = .2, shape = 21, col = "white") +
+  scale_x_continuous(breaks = c(3,6,9)) +
+  coord_cartesian(xlim = c(2,9.6), ylim = c(0,.75)) +
+  scale_fill_manual(values=col) + 
+  scale_colour_manual(values=col) +
+  labs(x="Temp. above local MMM (°C)", 
+       y="F[v]/F[m]") +
+  theme_classic() +
+  theme(axis.line = element_blank(),
+        panel.border = element_rect(size = .5, fill = "transparent"),
+        legend.title = element_blank(),
+        legend.background = element_rect(fill = "transparent"),
+        #legend.position = "none",
+        legend.text = element_text(face = "italic", size = 7, family = "Helvetica"),
+        legend.key.size = unit(2, units = "mm"),
+        legend.margin = margin(0,0,0,0, unit = "mm"),
+        axis.text.y = element_text(size = 8, family = "Helvetica"),
+        axis.title = element_text(size = 9, family = "Helvetica"))  
+
+Species.plot
+ggsave("2_figures/SpeciesPlotonly.png", width = 140, height = 70, units = "mm")
+
+```
+
+
+
+
+
+#### Fig SX: PSII Species X catBleaching
+```{r}
+SpeciesBl.plot = ggplot() +
+  geom_segment(data = prdc.ED50, aes(x = MMM_dev, xend = MMM_dev, y = -Inf, yend = Estimate , color = Species), 
+                  linetype = 1, size = .3) +
+  geom_point(data=psii.1, aes(x=MMM_dev, y=median.yield, col=Species), alpha=0.1, size = 1) +
+  geom_line(data = prdc.spp, aes(colour=Species, y=Estimate, x=MMM_dev), size = .3) +
+  geom_ribbon(data=prdc.spp, aes(x = MMM_dev, ymin = Q2.5, ymax = Q97.5, fill = Species), 
+              alpha = 0.5, show.legend = FALSE) +
+  geom_point(data = prdc.ED50, aes(x = MMM_dev, y = Estimate, fill = Species), size = 1.5, stroke = .2, shape = 21, col = "white") +
+  scale_x_continuous(breaks = c(3,6,9)) +
+  coord_cartesian(xlim = c(2,9.6), ylim = c(0,.75)) +
+  scale_fill_manual(values=col) + 
+  scale_colour_manual(values=col) +
+  labs(x="Temp. above local MMM (°C)", 
+       y="Fv/Fm") +
+  theme_classic() +
+  facet_wrap(~catBleaching) +
+  theme(axis.line = element_blank(),
+        panel.border = element_rect(size = .5, fill = "transparent"),
+        legend.title = element_blank(),
+        legend.background = element_rect(fill = "transparent"),
+        legend.position = "right",
+        legend.text = element_text(face = "italic", size = 7, family = "Helvetica"),
+        legend.key.size = unit(2, units = "mm"),
+        legend.margin = margin(0,0,0,0, unit = "mm"),
+        axis.text.y = element_text(size = 8, family = "Helvetica"),
+        axis.title = element_text(size = 9, family = "Helvetica"))  
+
+SpeciesBl.plot
+ggsave("2_figures/FigS3_catBleaching_by_Species.png", width = 140, height = 70, units = "mm")
+```
+
+
+
+
+
+
+## 2.4 Model selection : REEF
+
+### Combined 3-way interaction
+Since we don't have the same set of reefs for all species, we can't run the three-way interaction Species:Reef:catBleaching but we can still explore what this will look like for a subset of reefs and how it affects each model parameter. However, this significantly increases the complexity of the model so we need to simplify it.
+
+If we look at the interaction between species and catBleaching. We saw that for species, the most complex model, with an interaction between species and catBleaching on all parameter estimates was important. However, the strength of the effect depends on the species and parameter. We can see from below:
+  - catBleaching has a weak effect on b, though can be an important source of variation between species
+  - catBleaching has a strong effect on d, particularly for A. humilis
+  - catBleaching has a weak effect on e, with the only significant effect on P. verrucosa
+
+```{r}
+emmeans(my.model1, ~catBleaching|Species, param = 'b', level = 0.95) %>% plot(comparisons = TRUE)
+emmeans(my.model1, ~catBleaching|Species, param = 'd', level = 0.95) %>% plot(comparisons = TRUE)
+emmeans(my.model1, ~catBleaching|Species, param = 'e', level = 0.95) %>% plot(comparisons = TRUE)
+``` 
+Therefore when developing a more complex model that include reefs. We must consider:
+  - Species differences on b
+  - Species and catBleahching differences on d
+  - Species differences on e
+  
+However, running Species on b does not work, perhaps because it is confounded by another fixed factor. So we have to fix the slope. 
+
+```{r}
+#testing the 3-interaction on psii.2 (a common subset of reefs)
+modNaive <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = psii.2,
+            curveid = Species:Reef:catBleaching,
+            pmodels = c( ~ 1,  ~ Species*catBleaching,  ~ Species*Reef), bcVal = 0.5)
+
+reef.1 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = psii.2,
+                    random = e ~ 1|Vial,
+                    fixed = list(b ~ 1, d ~ Species*catBleaching, e ~ Species*Reef),
+                    start = coef(modNaive), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+emmeans(reef.1, ~Reef|Species, param = "e") %>% plot(comparisons = TRUE)
+emmeans(reef.1, ~catBleaching|Species, param = "d") %>% plot(comparisons = TRUE)
+anova(reef.1)
+
+##Create predictions data frame
+predframe.spp = with(psii.2, expand.grid(Species = levels(Species),
+                                         Reef = levels(Reef),
+                                         catBleaching = levels(catBleaching),
+                                         MMM_dev=seq(min(MMM_dev), max(MMM_dev) + 1, 0.1)))
+
+#Adding confidence intervals
+prdc.spp = as.data.frame(nlraa::predict_nlme(reef.1, newdata = predframe.spp, 
+                                           interval = "confidence", level = 0.950))
+
+prdc.spp = bind_cols(predframe.spp, prdc.spp)
+
+ggplot(prdc.spp, aes(x = MMM_dev, y = Estimate, col = Reef)) +
+  geom_line() +
+  facet_grid(catBleaching~Species) +
+  theme_light()
+
+ggplot(prdc.spp, aes(x = MMM_dev, y = Estimate, col = catBleaching)) +
+  geom_line() +
+  facet_grid(Reef~Species) +
+  theme_light()
+```
+d.Species:catBleaching    - The interaction is significant
+e.Species:Reef            - The interaction is significant
+
+
+
+### Species-specific models
+Due to some species not being present for some reefs, we will run the species separately. The difficulty now is that not all bleaching categories will be present for each reef in each species. We can compare the results obtained from the 3-way interaction with the results obtained for each individuals species modelled separately.
+
+First, we'll have to subset the data to remove reefs with small sample sizes for each reef
+```{r}
+#How many samples from each Species/Reef
+psii %>% group_by(Species, Reef) %>% 
+  dplyr::summarise(n = dplyr::n()) %>% 
+  spread(key = Species, value = n)
+
+ahum.1 = psii %>% filter(Species == "A. cf humilis") %>% 
+  as.data.frame() %>% 
+  droplevels()
+
+pmea.1 = psii %>% filter(Species == "P. meandrina") %>% 
+  droplevels()
+
+pver.1 = psii %>% 
+  filter(Species == "P. verrucosa") %>% 
+  filter(! Reef %in% c("Frederick", "Chilcott")) %>% 
+  droplevels()
+```
+
+
+
+#### What parameters to estimate?
+Not all bleaching categories present at each reef, explore model selection with a subset of reefs
+```{r}
+ahum.1 %>% group_by(Reef, catBleaching) %>% 
+  dplyr::summarise(n = dplyr::n()) %>% 
+  spread(key = catBleaching, value = n)
+
+ahum.2 = ahum.1 %>% filter(! Reef %in% c("Frederick", "Wreck")) %>% 
+  as.data.frame() %>% droplevels()
+```
+
+```{r}
+#model d and e? 
+# model with 
+modNaive.ahum <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = ahum.2,
+            curveid = Reef,
+            pmodels = c( ~ 1,  ~ 1,  ~ Reef), bcVal = 0.5)
+
+reef.ahum.1 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = ahum.2,
+                    random = e ~ 1|Vial,
+                    fixed = list(b ~ 1, d ~ 1, e ~ Reef),
+                    start = coef(modNaive.ahum), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+modNaive.ahum <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = ahum.2,
+            curveid = Reef,
+            pmodels = c( ~ 1,  ~ Reef,  ~ Reef), bcVal = 0.5)
+
+reef.ahum.2 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = ahum.2,
+                    random = e ~ 1|Vial,
+                    fixed = list(b ~ 1, d ~ Reef, e ~ Reef),
+                    start = coef(modNaive.ahum), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+modNaive.ahum <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = ahum.2,
+            curveid = Reef,
+            pmodels = c( ~ Reef,  ~ Reef,  ~ Reef), bcVal = 0.5)
+#reef.ahum.3 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = ahum.2,
+#                    random = e ~ 1|Vial,
+#                    fixed = list(b ~ Reef, d ~ Reef, e ~ Reef),
+#                    start = coef(modNaive.ahum), 
+#                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+AIC(reef.ahum.1, reef.ahum.2)
+```
+Can't run any models to estimate b, we can assume that the gradient is the same within species. However, we get marginal improvements with d and e.
+Best model: reef.ahum.2
+
+#### Accounting for bleaching
+How does the catBleaching affect e and d
+```{r}
+modNaive.ahum <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = ahum.2,
+            curveid = Reef:catBleaching,
+            pmodels = c( ~ 1,  ~ Reef*catBleaching,  ~ Reef*catBleaching), bcVal = 0.5)
+
+reef.ahum.3 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = ahum.2,
+                    random = e ~ 1|Vial,
+                    fixed = list(b ~ 1, d ~ Reef*catBleaching, e ~ Reef*catBleaching),
+                    start = coef(modNaive.ahum), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+modNaive.ahum <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = ahum.2,
+            curveid = Reef:catBleaching,
+            pmodels = c( ~ 1,  ~ Reef,  ~ Reef*catBleaching), bcVal = 0.5)
+
+reef.ahum.4 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = ahum.2,
+                    random = e ~ 1|Vial,
+                    fixed = list(b ~ 1, d ~ Reef, e ~ Reef*catBleaching),
+                    start = coef(modNaive.ahum), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+modNaive.ahum <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = ahum.2,
+            curveid = Reef:catBleaching,
+            pmodels = c( ~ 1,  ~ Reef*catBleaching,  ~ Reef), bcVal = 0.5)
+
+reef.ahum.5 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = ahum.2,
+                    random = e ~ 1|Vial,
+                    fixed = list(b ~ 1, d ~ Reef*catBleaching, e ~ Reef),
+                    start = coef(modNaive.ahum), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+
+AIC(reef.ahum.2, reef.ahum.3, reef.ahum.4, reef.ahum.5)
+anova(reef.ahum.2, reef.ahum.5)
+summary(reef.ahum.5)
+```
+There is a small effect of catBleaching on d but the interaction is not significant. We can see how catBleaching is affecting a subset of reefs, notably Bougainville and Moore. Bothe have small sample sizes of 'Poor' categories, which may explain the weak interaction. Overall, we can ignore the interaction and proceed with a simpler model that does not involve an interaction catBleaching*Reef. However, we may wish to control fo catBleaching as a random effect.
+Best model: reef.ahum.2
+```{r}
+emmeans(reef.ahum.5, ~catBleaching|Reef, param = "d") %>% plot()
+```
+
+Furthermore, if we were to include the interaction, we have to remove some reefs where some bleaching categories are not present. We will favour including all reefs and incorporate catBleaching as a random effect. 
+
+```{r}
+modNaive.ahum <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = ahum.2,
+            curveid = Reef,
+            pmodels = c( ~ 1,  ~ Reef,  ~ Reef), bcVal = 0.5)
+
+#random effects... can we improved the model
+
+reef.ahum.6 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = ahum.2,
+                   random = d ~ 1|catBleaching + e ~ 1|Vial,
+                   fixed = list(b ~ 1, d ~ Reef, e ~ Reef),
+                   start = coef(modNaive.ahum), 
+                   control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+reef.ahum.7 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = ahum.2,
+                    random = e ~ 1|catBleaching,
+                    fixed = list(b ~ 1, d ~ Reef, e ~ Reef),
+                    start = coef(modNaive.ahum), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+reef.ahum.8 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = ahum.2,
+                    random = d ~ 1|catBleaching,
+                    fixed = list(b ~ 1, d ~ Reef, e ~ Reef),
+                    start = coef(modNaive.ahum), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+reef.ahum.9 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = ahum.2,
+                    random = d + e ~ 1|Vial,
+                    fixed = list(b ~ 1, d ~ Reef, e ~ Reef),
+                    start = coef(modNaive.ahum), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+reef.ahum.10 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = ahum.2,
+                    random = d + e ~ 1|catBleaching/Vial,
+                    fixed = list(b ~ 1, d ~ Reef, e ~ Reef),
+                    start = coef(modNaive.ahum), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+reef.ahum.11 = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = ahum.2,
+                    random = d + e ~ 1|catBleaching,
+                    fixed = list(b ~ 1, d ~ Reef, e ~ Reef),
+                    start = coef(modNaive.ahum), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+
+AIC(reef.ahum.2, reef.ahum.6, reef.ahum.7, reef.ahum.8, reef.ahum.9, reef.ahum.10, reef.ahum.11)
+```
+Based on what we saw in the species model, interaction with catBleaching above and random effects here, catBleaching may be having most of an impact on d but not e but we still want to control for Vial on e so reef.ahum.6 would be the top choice. 
+Best: reef.ahum.6
+
+However, the models don't converge when consider all reefs tested with each species. So we have to simply the model further. For consistency and to compare results, we will also need to use the same model for every species. 
+
+#### A. cf humilis
+```{r eval = FALSE}
+#with all reefs 
+modNaive.ahum <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = ahum.1,
+            curveid = Reef,
+            pmodels = c( ~ 1,  ~ 1,  ~ Reef), bcVal = 0.5)
+
+reef.ahum = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = ahum.1,
+                    random = d ~ 1|catBleaching + e ~ 1|Vial,
+                    fixed = list(b ~ 1, d ~ 1, e ~ Reef),
+                    start = coef(modNaive.ahum), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+```
+To protect our original models, we've saved them as a Rdata file
+
+```{r}
+load("3_outputs/nlme_A.humilis by reef.RData")
+emmeans(reef.ahum, ~Reef, param = "e") %>% plot(comparisons = TRUE)
+emmeans(reef.ahum, pairwise~Reef, param = "e")$contrast %>% plot()
+emmeans(reef.ahum, ~Reef, param = 'e', level = 0.95) 
+
+emmeans(reef.ahum, pairwise~Reef, param = "e")$contrast
+
+#Some significant differences
+```
+
+
+
+#### P. meandrina
+```{r}
+#with all reefs 
+modNaive.pmea <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = pmea.1,
+            curveid = Reef,
+            pmodels = c( ~ 1,  ~ 1,  ~ Reef), bcVal = 0.5)
+
+
+reef.pmea = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = pmea.1,
+                    random = d ~ 1|catBleaching + e ~ 1|Vial,
+                    fixed = list(b ~ 1, d ~ 1, e ~ Reef),
+                    start = coef(modNaive.pmea), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+```
+
+
+```{r}
+load("3_outputs/nlme_P.meandrina by reef.RData")
+emmeans(reef.pmea, ~Reef, param = "e") %>% plot(comparisons = TRUE)
+emmeans(reef.pmea, pairwise~Reef, param = "e")$contrast %>% plot()
+emmeans(reef.pmea, ~Reef, param = 'e', level = 0.95) 
+emmeans(reef.pmea, pairwise~Reef, param = "e")$contrast
+
+#Some significant differences
+```
+
+
+#### P. verrucosa
+```{r eval = FALSE}
+#with all reefs 
+modNaive.pver <- drm(median.yield ~ MMM_dev, fct = L.3(), 
+            data = pver.1,
+            curveid = Reef,
+            pmodels = c( ~ 1,  ~ 1,  ~ Reef), bcVal = 0.5)
+
+
+reef.pver = nlme(median.yield ~ NLS.L3(MMM_dev, b, d, e), data = pver.1,
+                    random = d ~ 1|catBleaching + e ~ 1|Vial,
+                    fixed = list(b ~ 1, d ~ 1, e ~ Reef),
+                    start = coef(modNaive.pver), 
+                    control = list(msMaxIter = 2000, maxIter=2000, minScale=0.0001))
+```
+
+
+```{r}
+load("3_outputs/nlme_P.verrucosa by reef.RData")
+emmeans(reef.pver, ~Reef, param = "e") %>% plot(comparisons = TRUE)
+emmeans(reef.pver, pairwise~Reef, param = "e")$contrast %>% plot()
+emmeans(reef.pver, ~Reef, param = 'e', level = 0.95) 
+
+emmeans(reef.pver, pairwise~Reef, param = "e")$contrast
+
+#Some significant differences
+```
+
+### Absolute Temperature ED50s (Table S5 SOM)
+```{r absolute temperature table S5}
+ahum.abs = ahum.1 %>% group_by(Reef) %>% 
+  summarise(MMM = mean(MMM)) %>% 
+  left_join(emmeans(reef.ahum, ~Reef, param = "e") %>% as.data.frame(), by = "Reef") %>%  
+  mutate(absolute = MMM + emmean) %>% 
+  mutate(absolute.lowerCL = MMM + lower.CL) %>% 
+  mutate(absolute.upperCL = MMM + upper.CL)
+
+pmea.abs = pmea.1%>% group_by(Reef) %>% 
+  summarise(MMM = mean(MMM)) %>% 
+  left_join(emmeans(reef.pmea, ~Reef, param = "e") %>% as.data.frame(), by = "Reef") %>%  
+  mutate(absolute = MMM + emmean) %>% 
+  mutate(absolute.lowerCL = MMM + lower.CL) %>% 
+  mutate(absolute.upperCL = MMM + upper.CL)
+
+pver.abs = pver.1 %>% group_by(Reef) %>% 
+  summarise(MMM = mean(MMM)) %>% 
+  left_join(emmeans(reef.pver, ~Reef, param = "e") %>% as.data.frame(), by = "Reef") %>%  
+  mutate(absolute = MMM + emmean) %>% 
+  mutate(absolute.lowerCL = MMM + lower.CL) %>% 
+  mutate(absolute.upperCL = MMM + upper.CL)
+```
+
+
+
+## 2.5 Model predictions: Species*Reef
+
+```{r}
+##Create predictions data frame
+predframe.ahum = with(ahum.1, expand.grid(Reef = levels(Reef), MMM_dev=seq(min(MMM_dev), max(MMM_dev) + 1, 0.1)))
+
+#Adding confidence intervals
+prdc.ahum = as.data.frame(nlraa::predict_nlme(reef.ahum, newdata = predframe.ahum, interval = "confidence", level = 0.95))
+prdc.ahum = bind_cols(predframe.ahum, prdc.ahum)
+
+# Predict ED50 for each species 
+#(Since we're not varyin d, we don't have to do this but could be handy nevertheless. Estimate values should not change much between reefs)
+ED50.ahum = emmeans(reef.ahum, ~Reef, param= "e") %>% as_tibble() %>% 
+  dplyr::select(Reef, emmean) %>% 
+  dplyr::rename(MMM_dev = emmean)
+  
+prdc.ED50.ahum = as.data.frame(nlraa::predict_nlme(reef.ahum, newdata = ED50.ahum, interval = "confidence", level = 0.95))
+prdc.ED50.ahum = bind_cols(ED50.ahum, prdc.ED50.ahum)
+```
+
+#### P. meandrina
+```{r}
+##Create predictions data frame
+predframe.pmea = with(pmea.1, expand.grid(Reef = levels(Reef), MMM_dev=seq(min(MMM_dev), max(MMM_dev) + 1, 0.1)))
+
+#Adding confidence intervals
+prdc.pmea = as.data.frame(nlraa::predict_nlme(reef.pmea, newdata = predframe.pmea, interval = "confidence", level = 0.95))
+prdc.pmea = bind_cols(predframe.pmea, prdc.pmea)
+
+
+# Predict ED50 for each species
+ED50.pmea = emmeans(reef.pmea, ~Reef, param= "e") %>% as_tibble() %>% 
+  dplyr::select(Reef, emmean) %>% 
+  dplyr::rename(MMM_dev = emmean)
+  
+prdc.ED50.pmea = as.data.frame(nlraa::predict_nlme(reef.pmea, newdata = ED50.pmea, interval = "confidence", level = 0.95))
+prdc.ED50.pmea = bind_cols(ED50.pmea, prdc.ED50.pmea)
+```
+
+#### P. verrucosa
+```{r}
+##Create predictions data frame
+predframe.pver = with(pver.1, 
+                     expand.grid(Reef = levels(Reef),
+                                 MMM_dev=seq(min(MMM_dev), max(MMM_dev) + 1, 0.1)))
+
+#Adding confidence intervals
+prdc.pver = as.data.frame(nlraa::predict_nlme(reef.pver, newdata = predframe.pver, 
+                                           interval = "confidence", level = 0.95))
+prdc.pver = bind_cols(predframe.pver, prdc.pver)
+
+
+# Predict ED50 for each species
+ED50.pver = emmeans(reef.pver, ~Reef, param= "e") %>% as_tibble() %>% 
+  dplyr::select(Reef, emmean) %>% 
+  dplyr::rename(MMM_dev = emmean)
+  
+prdc.ED50.pver = as.data.frame(nlraa::predict_nlme(reef.pver, newdata = ED50.pver, interval = "confidence", level = 0.95))
+prdc.ED50.pver = bind_cols(ED50.pver, prdc.ED50.pver)
+```
+
+
+## 2.6 Figure: Reef comparison
+
+```{r}
+#Base order of reefs and colours on the average ED50.
+Reef.ED50 = prdc.ED50.ahum %>% mutate(Species = "A. cf humilis") %>% dplyr::select(Species, Reef, MMM_dev) %>% 
+  bind_rows(prdc.ED50.pmea %>% mutate(Species = "P. meandrina") %>% dplyr::select(Species, Reef, MMM_dev)) %>% 
+  bind_rows(prdc.ED50.pver %>% mutate(Species = "P. verrucosa") %>% dplyr::select(Species, Reef, MMM_dev)) %>% 
+  spread(key = Species, value = MMM_dev) %>% 
+  rowwise(Reef) %>% 
+  dplyr::summarise(average = mean(c(`A. cf humilis`, `P. meandrina`, `P. verrucosa`), na.rm = T)) %>% 
+  arrange(average) 
+
+Reef.order = fct_reorder(Reef.ED50$Reef, Reef.ED50$average)
+
+#Combine all data and reorder Reef factor
+line.pred.dat = prdc.ahum %>% mutate(Species = "A. cf humilis") %>% 
+  bind_rows(prdc.pmea %>% mutate(Species = "P. meandrina")) %>% 
+  bind_rows(prdc.pver %>% mutate(Species = "P. verrucosa")) %>% 
+  mutate(Reef = factor(Reef, levels(Reef.order)))
+  
+point.obs.dat = ahum.1 %>% 
+  bind_rows(pmea.1) %>% 
+  bind_rows(pver.1) %>%
+  mutate(Reef = factor(Reef, levels(Reef.order)))
+
+point.ED50.dat = prdc.ED50.ahum %>% mutate(Species = "A. cf humilis") %>% 
+  bind_rows(prdc.ED50.pmea %>% mutate(Species = "P. meandrina")) %>% 
+  bind_rows(prdc.ED50.pver %>% mutate(Species = "P. verrucosa")) %>% 
+  mutate(Reef = factor(Reef, levels(Reef.order)))
+  
+```
+
+
+#### Fig 2B: PSII comparison by Reef
+```{r}
+col = wes_palette("Zissou1", 9, type = "continuous")
+
+Reef.plot = ggplot() +
+  geom_segment(data = point.ED50.dat, aes(x = MMM_dev, xend = MMM_dev, y = -Inf, yend = Estimate , color = Reef), 
+                  linetype = 1, size = .3) +
+  geom_line(data = line.pred.dat, aes(colour=Reef, y=Estimate, x=MMM_dev), size = .3) +
+  geom_point(data = point.ED50.dat, aes(x = MMM_dev, y = Estimate, fill = Reef), size = 1.5, stroke = .2, shape = 21, col = "white") +
+  geom_text(data = data.frame(Species = c("A. cf humilis", "P. meandrina", "P. verrucosa")),
+            aes(y = .71, x = 2, label = Species), size = 3, fontface = "italic", family = "Helvetica", hjust = 0) +
+  #scale_y_continuous(labels = scales::percent, breaks = c(0, .5, 1)) +
+  scale_x_continuous(breaks = c(3,6,9)) +
+  coord_cartesian(xlim = c(2,9.6), ylim = c(0,.75)) +
+  scale_fill_manual(values=col) + 
+  scale_colour_manual(values=col) +
+  facet_grid(Species~.) +
+  labs(x="Temp. above local MMM (°C) ", 
+       y="PSII-yield") +
+  theme_classic() +
+  theme(axis.line = element_blank(),
+        panel.border = element_rect(size = .5, fill = "transparent"),
+        strip.text = element_blank(),
+        strip.background = element_blank(),
+        legend.title = element_blank(),
+        legend.background = element_rect(fill = "transparent"),
+        legend.position = "right", 
+        legend.text = element_text(size = 7, family = "Helvetica"),
+        legend.key.size = unit(2, units = "mm"),
+        legend.margin = margin(0,0,0,0, unit = "mm"),
+        axis.text.y = element_text(size = 8, family = "Helvetica"),
+        axis.title = element_text(size = 9, family = "Helvetica"))
+  
+Reef.plot
+```
+
+
+
+## 2.6 Model comparison
+Does it make a difference to estimate e using the 3 way interaction of for each reef separately?
+
+#### Fig SX: model comparison
+```{r}
+#All species in the same model
+mod.all = emmeans(reef.1, ~Reef|Species, param = "e")  %>% as.tibble() %>% 
+  dplyr::select(Species, Reef, emmean, lower.CL, upper.CL)
+
+#Species modelled separately
+mod.sep = emmeans(reef.ahum, ~Reef, param= "e") %>% as.tibble() %>% 
+              mutate(Species = "A. cf humilis") %>% dplyr::select(Species, Reef, emmean, lower.CL, upper.CL) %>% 
+  bind_rows(emmeans(reef.pmea, ~Reef, param= "e") %>% as.tibble() %>% 
+              mutate(Species = "P. meandrina") %>% dplyr::select(Species, Reef, emmean, lower.CL, upper.CL)) %>% 
+  bind_rows(emmeans(reef.pver, ~Reef, param= "e") %>% as.tibble() %>% 
+              mutate(Species = "P. verrucosa") %>% dplyr::select(Species, Reef, emmean, lower.CL, upper.CL)) %>% 
+  mutate(Reef = factor(Reef, levels(Reef.order)))
+
+ggplot(bind_rows(mod.all %>% mutate(model = "combined"), mod.sep %>% mutate(model = "separate")), 
+       aes(y = emmean, x = Reef, ymin = lower.CL, ymax = upper.CL, col = model)) +
+  geom_pointrange(position = position_dodge(width = .5)) +
+  scale_color_manual(values = c("grey30", "skyblue2")) +
+  facet_wrap(~Species, scales = "free_x") +
+  labs(y = "ED50 estimate", x = "") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.line = element_blank(), 
+        panel.border = element_rect(color = "black", fill = "transparent", size = 1),
+        strip.background = element_blank(), 
+        strip.text = element_text(face = "italic"),
+        legend.title = element_blank(),
+        legend.position = c(.9,.15),
+        legend.background = element_rect(fill = "transparent"))
+
+ggsave("2_figures/FigS4_Model comparison.png", width = 140, height = 70, units = "mm")
+```
+It makes no difference what model we use. 
+
+
+# 3. DRC Results
+
+#### Table S1. ED50 values for each reef nested within species + 95 CI 
+```{r}
+library(gt)
+library(tidyverse)
+
+tableED50reef = mod.sep %>% 
+  mutate(emmean = round(emmean,2), CI = paste(round(lower.CL,2), round(upper.CL,2), sep = "-")) %>% 
+  dplyr::select(-lower.CL, -upper.CL) %>% 
+  mutate(ED50 = paste(emmean, CI, sep = " ")) %>% 
+  dplyr::select(-emmean, -CI) %>% 
+  spread(key = Species, value = ED50) %>% 
+  mutate(Reef = factor(Reef, levels = Reef.order)) %>% arrange(Reef)
+
+gt_tbl.reefED50 <- gt(tableED50reef) %>% 
+  tab_header(
+  title = "Table S4. Summary tables derived from emmeans for ED50 values related to each reef and species combination (95% confidence intervals). ",) %>% 
+  tab_spanner(label = "Species",
+    columns = c("A. cf humilis", "P. meandrina", "P. verrucosa"))
+
+#gt_tbl.reefED50
+```
+
+#### Figure 2
+```{r}
+g1 = ggarrange(
+  #Species plot
+  Species.plot + labs(x = "") + 
+    theme(axis.text.x = element_blank(), 
+          plot.margin  = margin(0.1,0.1,0,.6, unit = "cm")), 
+  #Reef plot        
+  Reef.plot + theme(plot.margin  = margin(0.1,0.24,0.1,.6, unit = "cm")), 
+          nrow = 2, heights = c(.33,.66), labels = c("a", "b"), 
+          font.label = list(size = 12, family = "Helvetica")) 
+
+g1
+
+ggsave("2_figures/Fig2_v1.png", dpi =300, width=90, height=110, units = "mm")
+```
+
+
+#4. Drivers of heat tolerance among reefs in the CSMP
+
+There are significant differences in the estimated ED50 among reefs. Can different climatic regimes be driving these patterns?
+
+## 4.2 Data
+
+### Fig 3a . PSII-50 by reef and species with 95%CI
+```{r}
+col = wes_palette("GrandBudapest1", 4, type = "continuous")
+
+Fig3a =  ggplot(mod.sep, aes(y = emmean, x = Reef, ymin = lower.CL, ymax = upper.CL, col = Species)) +
+  geom_pointrange(position = position_dodge(width = .4), size = .2) +
+  scale_y_continuous(expand = c(0,0), lim = c(5.9,8.5), breaks = c(6.5, 7, 7.5, 8)) +
+  scale_colour_manual(values=col) +
+  labs(x="", 
+       y="ED50 (95% CI)") +
+  theme_classic() + 
+  theme(axis.line = element_blank(),
+        panel.border = element_rect(size = .5, fill = "transparent"),
+        legend.title = element_blank(),
+        legend.background = element_rect(fill = "transparent"),
+        legend.position = c(.22,.9),
+        legend.text = element_text(face = "italic", size = 10, family = "Helvetica"),
+        legend.key.size = unit(3, units = "mm"),
+        legend.margin = margin(0,0,0,0, unit = "mm"),
+        axis.text = element_text(size = 14, family = "Helvetica"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title = element_text(size = 14, family = "Helvetica"))
+
+Fig3a
+```
+We can observe a large variation in the point of inflection between reefs in the CSMP that span several degrees of latitude and an array of climatic regimes. 
+
+
+### Climate predictors of PSII-50
+We will use the PSII-50 values derived from separate reef models and test against a suite of environmental variables
+
+*Thermal history metadata (based on NOAA ..... ) *
+DHW3:               Number of Degree Heating Weeks (DHW) events greater than 3 between 1985 - 2020 
+DHW4:               Number of DHW events greater than 4C-weeks between 1985 - 2020 
+DHW6:               Number of DHW events greater than 6C-weeks between 1985 - 2020 
+DHW8:               Number of DHW events greater than 8C-weeks between 1985 - 2020 
+DHW9:               Number of DHW events greater than 9C-weeks between 1985 - 2020 
+maxDHW:             Maximum DHW experienced between 1985 - 2020 
+meanDHW:            Average DHWs experienced between 1985 - 2020
+
+MMM:                Maximum Monthly Mean SST between 1986 - 2010
+meanSST:            Average Sea Surface Temperature (SST) between 1985 - 2020
+maxSST:             Maximum Sea Surface Temperature (SST) between 1985 - 2020 
+minSST:             Max Sea Surface Temperature (SST) between 1985 - 2020 
+rangeSST:           Range between Max and Min SST values between 1985 - 2020
+varSST:             Variability in SST between 1985 - 2020 
+
+Recent.maxDHW       Maximum DHW exposue between 2016 - 2020
+Recent.meanDHW      Average maximum DHW exposure between 2016 - 2020 
+
+ReturnDHW3          The return time between events where DHW exceeded 3C-weeks
+ReturnDHW4          The return time between events where DHW exceeded 4C-weeks
+
+
+
+### Merging all data frames together 
+```{r}
+#Load data for thermal history data 
+load("1_data/SiteDisturbanceHistory_DHW.RData")
+load("1_data/reef.info.RData")
+
+#DHW values for all reefs at the time of sampling (Feb-Mar 2020)
+DHW2020 = bind_rows(ahum.1, pmea.1, pver.1) %>% 
+  group_by(Reef, Site, DHW) %>% 
+  dplyr::summarise() %>% 
+  group_by(Reef) %>% 
+  dplyr::summarise(DHW2020 = mean(DHW, na.rm = TRUE)) 
+
+#we merge data frames for thermal history metrics and geographic information with the ED50 values 
+clim.variables = site.bleachings %>% ungroup() %>% dplyr::select(-Sector, -Site, -Month) %>% 
+  group_by(Reef) %>% dplyr::summarise_all(mean) %>% 
+  left_join(DHW2020, by = "Reef") %>% 
+  left_join(reef.info %>% ungroup() %>% dplyr::select(-SectorRegion, -Sector, -Region), by = "Reef") %>% 
+  filter(Reef %in% mod.sep$Reef)
+
+psii.prediction = clim.variables %>% 
+  gather(key = variable, value = value, -Reef) %>% 
+  full_join(mod.sep %>% dplyr::rename(ED50 = emmean), by = "Reef") %>% 
+  filter(! is.na(value)) %>% 
+  dplyr::mutate(value = round(value, 2))
+
+#linear relationships
+col = wes_palette("GrandBudapest1", 4, type = "continuous")
+
+ggplot(psii.prediction, aes(y = ED50, x = value, col = Species, fill = Species)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  scale_fill_manual(values=col) + 
+  scale_colour_manual(values=col) +
+  labs(y = "ED50", x = "Environmental metric") +
+  facet_wrap(~variable, scales = "free") +
+  theme_classic() +
+  theme(axis.line = element_blank(),
+      axis.text.x = element_text(angle = 45, hjust = 1),       
+      axis.text = element_text(size = 8, family = "Helvetica"), 
+      strip.text = element_text(size = 7)) 
+
+ggsave("2_figures/FigS5_correlation plot.png", height = 5, width = 7, units = "in")
+
+```
+At first glance, we see that many variables show some relationship with ED50, but that heat tolerance drivers might be species-specific (ED50) in response to environmental variables. For example, DHW3 has strong correlation to ED50 value for A. humilis but the trend looks less strong for either of the Poci species, which may point towards an interaction. 
+
+
+
+## 4.1 Correlation matrix of thermal history metrics
+
+### Correlations between climate variables
+Before we interpret these relationships, it's important to consider that many of these variables are co-linear. Any metrics that have high correlation may represent the same climate variability and do not need to be included.
+
+```{r}
+library(corrplot)
+clim.variables %>% dplyr::select(-Reef) %>% cor() %>% corrplot()
+```
+
+### Correlations between ED50 values and thermal variables
+Let's look at correlation coefficients from these data to see which variables show strong correlation. 
+```{r message = F}
+psii.prediction %>% 
+  group_by(variable, Species) %>% 
+  summarise(correlation = cor(value, ED50)) %>% 
+  ggplot(aes(y = variable, x = Species, fill = correlation)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "darkred", mid = "white", high = "blue3") +
+  theme_classic() + theme(axis.line = element_blank())
+
+ggsave("2_figures/FigS7_correlation by species.png", height = 5, width = 7, units = "in")
+
+
+save(psii.prediction, file = "1_data/psii.prediction.Rdata")
+```
+Looking at each species correlation values, we find that each species responds differently to each environmental variables.  In common, all species seem to have a very fairly strong positive relationship to varSST, and negative relationship to recent meanDHW. 
+
+
+Here we are looking at the correlation values between enviro and ED50 selecting a subset with any variables that are > 0.40. 
+```{r}
+psii.prediction %>% 
+  group_by(variable) %>% 
+  summarise(correlation = cor(value, ED50))
+
+
+psii.wide = psii.prediction %>% spread(variable, value)
+save(psii.wide, file = "1_data/psii.wide.Rdata")
+```
+
+
+
+We can take a subset of variables to represent the range of climate regimes and that have low colinearity to other variables. We are excluding MMM and DHW2020 because the collinearity is > 0.80 to other variables that are of importance and have a stronger correlation to ED50s (e.g. recent.meanDHW). 
+```{r}
+climate.subset = c("DHW2020", "DHW4", "Lat", "meanSST", "minSST", "MMM", "rangeSST", "recent.meanDHW", "returnDHW6", "varSST")
+
+clim.variables %>% dplyr::select(all_of(climate.subset)) %>% 
+  cor()  %>% corrplot() 
+#we will keep all but range SST. 
+```
+
+
+
+We are now subsetting variables for any that have high correlation to ED50. 
+- First, we excluded latitude, meanSST, minSST, maxSST because they are all highly correlated to each other. 
+- Then, we also exclude DHW2020 and MMM because they are highly correlated to recent.meanDHW. We choose to keep recent.meanDHW because it has the highest correlation with ED50 out of any of these 3 variables. 
+- We then exclude rangeSST because of high correlation with varSST. VarSST has stronger relationship with ED50 so we preferentially keep it in. 
+This leaves us with 4 remaining variables to go into the first dredge model: DHW4, recent.meanDHW, returnDHW6, and varSST. 
+```{r}
+thermal.subset = c("DHW4", "recent.meanDHW", "returnDHW6", "varSST")
+
+clim.variables%>% dplyr::select(all_of(thermal.subset)) %>% 
+  cor() %>% corrplot()
+```
+
+
+Below, the four plots represent some of the strongest climate variables that are not too strongly correlated with each other, but show some correlation with ED50. This allows us to assess whether some variables might have an interaction with species. We can use this subset to investigate the drivers of ED50 in a dredge model. 
+```{r}
+col = wes_palette("GrandBudapest1", 4, type = "continuous")
+
+psii.prediction %>% filter(variable %in% thermal.subset) %>% 
+  ggplot(aes(y = ED50, x = value, col = Species, fill = Species)) +
+  geom_smooth(method = "lm") +
+  geom_point() +
+  scale_fill_manual(values=col) + 
+  scale_colour_manual(values=col) +
+  labs(y = "ED50") +
+  facet_wrap(~variable, scales = "free") +
+  theme_classic() +
+  theme(axis.line = element_blank(),
+        panel.border = element_rect(size = .5, fill = "transparent"),
+        axis.text = element_text(size = 8, family = "Helvetica"),
+        axis.title = element_text(size = 9, family = "Helvetica"))
+
+ggsave("2_figures/FigS8_EnviroRelationships.png", height = 5, width = 7, units = "in")
+```
+
+
+
+## 4.3 Dredging: Candidate Model Selection 
+
+### Initial dredge
+```{r}
+library(MuMIn)
+library(lme4)
+options(na.action = "na.fail")
+
+#creating a data frame with only the 4 variables selected (DHW4, recent.meanDHW, returnDHW6, and varSST)
+dredge.dat1 = psii.prediction %>% filter(variable %in% thermal.subset) %>% 
+  spread(key = variable, value = value) %>% 
+  dplyr::select(-ends_with(".CL"), -Reef)
+
+#dredge model that accounts for species + the four variables in the model. 
+dredge.mod1 <- dredge(lm(ED50~Species +., data = dredge.dat1), rank = "AIC", m.lim = c(1,4))
+
+#just look at the top 10 scoring models 
+head(dredge.mod1, 10)
+
+#extracting the best fit model using AIC score 
+bestmodel <- get.models(dredge.mod1, 1)[[1]]
+lm.dredge1 <- lm(bestmodel, data = dredge.dat1)
+summary(lm.dredge1)
+ggeffects::ggeffect(lm.dredge1) %>% plot
+```
+The best model is *ED50 ~ DHW4 + recent.meanDHW + returnDHW6 + Species*
+Only varSST was not included. However, we need to also consider if the species interaction is significant. 
+
+
+### Dredging with species interaction. 
+
+Dredging across all selected variables suggest a model that includes DHW4, MMM and recent.meanDHW best represents the data so far. However, we've seen there may be an interaction between Species * DHW4. Before forcing this interaction using dredge, we will see which model yields best AIC score with interaction and additional fixed effects. 
+```{r}
+lm.1 = lm(ED50~Species + DHW4 + recent.meanDHW + returnDHW6, data = dredge.dat1)
+lm.2 = lm(ED50~Species * DHW4 + recent.meanDHW + returnDHW6, data = dredge.dat1)
+lm.3 = lm(ED50~Species * returnDHW6 + DHW4 + recent.meanDHW, data = dredge.dat1)
+lm.4 = lm(ED50~Species * DHW4 * returnDHW6 + recent.meanDHW, data = dredge.dat1)
+
+
+AICc(lm.1, lm.2, lm.3, lm.4)
+#lm.2 has the lowest AIC, suggesting it is the better model. 
+anova(lm.1, lm.2)
+#The two models are also sufficiently different from each other to include the interaction
+summary(lm.2)
+summary(lm.3)
+#the interaction with DHW4 is important but not the interaction with returnDHW6 so will be used in the full dredge model.
+```
+The interaction is significant and the two models are significantly different from one another so we should include the interaction. (We also explored a three-way interaction with MMM and the interaction between Species and MMM, neither were significant)
+
+```{r}
+vif(lm.2)
+```
+In addition there is no colinearity between these core variables, which is good. 
+
+```{r}
+dredge.mod2 <- dredge(lm(ED50~Species*DHW4 +., data = dredge.dat1), rank = "AIC", m.lim = c(1,4))
+
+#just look at the top scoring models 
+head(dredge.mod2, 10)
+
+#extracting the best fit model using AIC score 
+bestmodel <- get.models(dredge.mod2, 1)[[1]]
+lm.dredge2 <- lm(bestmodel, data = dredge.dat1)
+summary(lm.dredge2)
+ggeffects::ggeffect(lm.dredge2) %>% plot
+```
+When we now include the interaction recent.meanDHW drops out from the best model. However, it is still important and results in a better model.
+```{r}
+lm.2 = lm(ED50~Species * DHW4 + recent.meanDHW + returnDHW6, data = dredge.dat1)
+lm.5 = lm(ED50~Species * DHW4 + returnDHW6, data = dredge.dat1)
+AICc(lm.2, lm.5)
+anova(lm.2, lm.5)
+```
+
+## Multiple interactions
+```{r}
+lm.2 = lm(ED50~Species * DHW4 + recent.meanDHW + returnDHW6, data = dredge.dat1)
+lm.6 = lm(ED50~Species * DHW4 * recent.meanDHW + returnDHW6, data = dredge.dat1)
+lm.7 = lm(ED50~Species * DHW4 * returnDHW6 + recent.meanDHW, data = dredge.dat1)
+lm.8 = lm(ED50~Species * returnDHW6 + DHW4  + recent.meanDHW, data = dredge.dat1)
+lm.9 = lm(ED50~Species * recent.meanDHW + DHW4  + returnDHW6, data = dredge.dat1)
+
+AICc(lm.2, lm.6, lm.7, lm.8, lm.9)
+```
+None of the other interactions improved the model.
+
+
+
+
+## Model validation
+```{r}
+library(performance)
+check_model(lm.2)
+```
+
+
+```{r rsquare}
+r.squaredGLMM(lm.2)
+```
+
+```{r}
+summary(lm.2)
+```
+
+```{r}
+#Slopes comparison: 
+emtrends(lm.2, pairwise~Species, var = "DHW4")
+```
+```{r}
+library(jtools)
+library(interactions)
+sim_slopes(lm.2, pred = DHW4, modx = Species, johnson_neyman = FALSE)
+```
+```{r}
+emtrends(lm.2, ~Species, var = "recent.meanDHW")
+sim_slopes(lm.2, pred = recent.meanDHW, modx = Species, johnson_neyman = FALSE)
+```
+
+
+###Relative Importance of Predictors
+```{r message = F}
+library('relaimpo')
+#calc.relimp(lm.2, type = "lmg")
+calc.relimp(lm.2, type = "lmg")@lmg 
+sum(calc.relimp(lm.2, type = "lmg")@lmg)
+calc.relimp(lm.2, type = "lmg")@lmg  /  sum(calc.relimp(lm.2, type = "lmg")@lmg)
+```
+For the output, we see that total proportion of variance explained by model is 86.6%. Species contributed 28.8% of variance, interaction of species * DHW4 contributed 8.5%, DHW4 contributed 16.3%, recent mean DHW contributed 18.2% and returnDHW6 accounted for 14.7% (total of these predictors = 86.6%, which is the total variance explained by the model)
+
+
+### Model Predictions
+```{r}
+Fig3a =  ggplot(mod.sep, aes(y = emmean, x = Reef, ymin = lower.CL, ymax = upper.CL, col = Species, shape = Species)) +
+  geom_pointrange(position = position_dodge(width = .4), size = .2) +
+  scale_y_continuous(expand = c(0,0), lim = c(6.1,8.6), breaks = c(6.5, 7, 7.5, 8, 8.5)) +
+  scale_colour_manual(values=col) +
+  labs(x="", 
+       y="ED50 (95% CI)") +
+  theme_classic() + 
+  theme(axis.line = element_blank(),
+        panel.border = element_rect(size = .5, fill = "transparent"),
+        legend.title = element_blank(),
+        legend.background = element_rect(fill = "transparent"),
+        legend.position = "bottom",
+        legend.direction = "vertical",
+        legend.text = element_text(face = "italic", size = 8, family = "Helvetica"),
+        legend.key.size = unit(3, units = "mm"),
+        legend.margin = margin(0,0,0,0, unit = "mm"),
+        axis.text = element_text(size = 8, family = "Helvetica"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title = element_text(size = 9, family = "Helvetica"),)
+
+Fig3a
+ggsave("2_figures/Fig3_ED50.pdf", plot = Fig3a, width = 70, height = 78, units = "mm")
+```
+
+
+```{r}
+#DHW4
+grid.DHW4 = with(dredge.dat1, list(DHW4 = seq(min(DHW4)-.1, max(DHW4)+.1, len = 50)))
+em.DHW4 = emmeans(lm.2, ~DHW4|Species, at = grid.DHW4, type = "response") %>% 
+  as.data.frame() %>% 
+  mutate(var = "DHW4") %>% 
+  rename(value = DHW4)
+#returnDHW6
+grid.returnDHW6 = with(dredge.dat1, list(returnDHW6 = seq(min(returnDHW6)-.1, max(returnDHW6)+.1, len = 50)))
+em.returnDHW6 = emmeans(lm.2, ~returnDHW6|Species, at = grid.returnDHW6, type = "response") %>% 
+  as.data.frame() %>% 
+  mutate(var = "returnDHW6") %>% 
+  rename(value = returnDHW6)
+#recent.meanDHW
+grid.recent.meanDHW = with(dredge.dat1, list(recent.meanDHW = seq(min(recent.meanDHW)-.1,
+                                                                  max(recent.meanDHW)+.1, len = 50)))
+em.recent.meanDHW = emmeans(lm.2, ~recent.meanDHW|Species, at = grid.recent.meanDHW, type = "response") %>% 
+  as.data.frame() %>% 
+  mutate(var = "recent.meanDHW") %>% 
+  rename(value = recent.meanDHW)
+
+library(wesanderson)
+col = wes_palette("GrandBudapest1", 4, type = "continuous")
+
+DHW4.lm.plot = ggplot(em.DHW4, aes(x = value, y = emmean, fill = Species)) +
+  geom_point(data = dredge.dat1, aes(y = ED50, x = DHW4, col = Species, shape = Species), alpha = .8) +
+  geom_ribbon(aes(ymin = lower.CL, ymax = upper.CL), alpha = .2) +
+  geom_line(aes(col = Species)) +
+  scale_color_manual(values = col) +
+  scale_fill_manual(values = col) +
+  scale_y_continuous(expand = c(0,0), lim = c(6.2,8.6), breaks = c(6.5, 7, 7.5, 8, 8.5)) +
+  scale_x_continuous(expand = c(0,0), lim = c(5,11), breaks = c(6,  8, 10)) +
+  coord_cartesian(xlim = c(5.6,10.6), ylim = c(6.1,8.6)) +
+  labs(y = "ED-50 (95% CI)", x = "# events > 4°C-weeks") +
+  theme_classic() +
+  theme(axis.line = element_blank(),
+        panel.border = element_rect(size = .5, fill = "transparent"),
+        legend.position = "none", 
+        axis.text = element_text(size = 8, family = "Helvetica"),
+        axis.title = element_text(size = 9, family = "Helvetica"),
+        axis.title.y = element_blank()) 
+
+returnDHW6.lm.plot = ggplot(em.returnDHW6, aes(x = value, y = emmean, fill = Species)) +
+  geom_point(data = dredge.dat1, aes(y = ED50, x = returnDHW6, col = Species, shape = Species), alpha = .8) +
+  geom_ribbon(aes(ymin = lower.CL, ymax = upper.CL), alpha = .2) +
+  geom_line(aes(col = Species)) +
+  scale_color_manual(values = col) +
+  scale_fill_manual(values = col) +
+  scale_y_continuous(expand = c(0,0), breaks = c(6.5, 7, 7.5, 8, 8.5)) + #lim = c(6.2,8.6)
+  scale_x_continuous(expand = c(0,0), breaks = c(3,6, 9, 12)) + 
+  coord_cartesian(xlim = c(1.85, 13.09), ylim = c(6.1,8.6)) +
+  labs(y = "ED-50 (95% CI)", x = "Return time events > 6°C-weeks") +
+  theme_classic() +
+  theme(axis.line = element_blank(),
+        panel.border = element_rect(size = .5, fill = "transparent"),
+        legend.position = "none", 
+        axis.text = element_text(size = 8, family = "Helvetica"),
+        axis.title = element_text(size = 9, family = "Helvetica"),
+        axis.title.y = element_blank())
+
+recent.meanDHW.lm.plot = ggplot(em.recent.meanDHW, aes(x = value, y = emmean, fill = Species)) +
+  geom_point(data = dredge.dat1, aes(y = ED50, x = recent.meanDHW, col = Species, shape = Species), alpha = .8) +
+  geom_ribbon(aes(ymin = lower.CL, ymax = upper.CL), alpha = .2) +
+  geom_line(aes(col = Species)) +
+  scale_color_manual(values = col) +
+  scale_fill_manual(values = col) +
+  scale_y_continuous(expand = c(0,0), breaks = c(6.5, 7, 7.5, 8, 8.5)) + #lim = c(6.2,8.6)
+  scale_x_continuous(expand = c(0,0), breaks = c(4,5,6)) + #lim = c(27.2,28.8), 
+  coord_cartesian(xlim = c(3.44,6.6), ylim = c(6.1,8.6)) +
+  labs(y = "ED-50 (95% CI)", x = "mean maxDHW 2016-20") +
+  theme_classic() +
+  theme(axis.line = element_blank(),
+        panel.border = element_rect(size = .5, fill = "transparent"),
+        legend.position = "none", 
+        axis.text = element_text(size = 8, family = "Helvetica"),
+        axis.title = element_text(size = 9, family = "Helvetica"),
+        axis.title.y = element_blank()) 
+```
+
+```{r}
+gpt = theme(axis.title = element_blank(), 
+      plot.margin = unit(c(1,1,1,1), "mm"))
+
+ggarrange(Fig3a + theme(legend.position = "none"),
+          DHW4.lm.plot + gpt,
+          returnDHW6.lm.plot + gpt,
+          recent.meanDHW.lm.plot + gpt,
+          ncol = 4, align = "hv")
+
+ggsave("2_figures/Fig3_model_v3.pdf", width = 180, height = 53, units = "mm")
+```
+
+
+
+
