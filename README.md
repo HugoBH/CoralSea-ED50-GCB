@@ -1,5 +1,8 @@
 # CoralSea-ED50-GCB
-Analysis of heat tolerance and ED50 from corals in the Coral Sea
+Analysis of heat tolerance and ED50 from corals in the Coral Sea. 
+
+
+**The authors would appreciate being notified if you intend to use these data or analyse in your own work**
 
 
 Mild marine heatwaves increase acute heat tolerance in corals 
