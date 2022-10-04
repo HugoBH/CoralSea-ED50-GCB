@@ -228,7 +228,7 @@ vif(lm.abs1)
 
 
 ```{r}
-r.squaredGLMM(lm.abs2)
+r.squaredGLMM(lm.abs1)
 ```
 
 
