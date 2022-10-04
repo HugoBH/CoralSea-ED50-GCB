@@ -1,0 +1,238 @@
+---
+title: "Absolute models"
+output: html_document
+date: "2022-09-23"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+```
+
+
+**Running environmental predictor analysis with absolute temp ED50s** 
+
+```{r}
+#calculate absolute values for each species and reef 
+ahum.abs = ahum.1 %>% group_by(Reef) %>% 
+  summarise(MMM = mean(MMM)) %>% 
+  left_join(emmeans(reef.ahum, ~Reef, param = "e") %>% as.data.frame(), by = "Reef") %>%  
+  mutate(absolute = MMM + emmean) %>% 
+  mutate(absolute.lowerCL = MMM + lower.CL) %>% 
+  mutate(absolute.upperCL = MMM + upper.CL)
+
+pmea.abs = pmea.1%>% group_by(Reef) %>% 
+  summarise(MMM = mean(MMM)) %>% 
+  left_join(emmeans(reef.pmea, ~Reef, param = "e") %>% as.data.frame(), by = "Reef") %>%  
+  mutate(absolute = MMM + emmean) %>% 
+  mutate(absolute.lowerCL = MMM + lower.CL) %>% 
+  mutate(absolute.upperCL = MMM + upper.CL)
+
+pver.abs = pver.1 %>% group_by(Reef) %>% 
+  summarise(MMM = mean(MMM)) %>% 
+  left_join(emmeans(reef.pver, ~Reef, param = "e") %>% as.data.frame(), by = "Reef") %>%  
+  mutate(absolute = MMM + emmean) %>% 
+  mutate(absolute.lowerCL = MMM + lower.CL) %>% 
+  mutate(absolute.upperCL = MMM + upper.CL)
+```
+
+```{r}
+#create a table to easily extract absolute ED50s + CIs for each reef/species combination 
+mod.sep.abs = ahum.abs %>% mutate(Species = "A. cf humilis") %>% dplyr::select(Species, Reef, absolute, absolute.lowerCL, absolute.upperCL) %>% 
+              bind_rows(pmea.abs %>% mutate(Species = "P. meandrina") %>% dplyr::select(Species, Reef, absolute, absolute.lowerCL, absolute.upperCL)) %>% 
+              bind_rows(pver.abs %>% mutate(Species = "P. verrucosa") %>% dplyr::select(Species, Reef, absolute, absolute.lowerCL, absolute.upperCL)) %>% 
+    mutate(Reef = factor(Reef, levels(Reef.order)))
+```
+
+### Fig 3a_absolute . PSII-50 by reef and species with 95%CI for absolute temperatures 
+```{r}
+#re-creating figure 3a to visualise differences among reefs and species with absolute ED50s. 
+col = wes_palette("GrandBudapest1", 4, type = "continuous")
+
+Fig3a.abs =  ggplot(mod.sep.abs, aes(y = absolute, x = Reef, ymin = absolute.lowerCL, ymax = absolute.upperCL, col = Species)) +
+  geom_pointrange(position = position_dodge(width = .4), size = .2) +
+  scale_y_continuous(expand = c(0,0), lim = c(5.9,8.5), breaks = c(6.5, 7, 7.5, 8)) +
+  scale_colour_manual(values=col) +
+  labs(x="Reef", 
+       y="ED50 (95% CI)") +
+  theme_classic() + 
+    scale_y_continuous(expand = c(0,0), limit = c(34,38), breaks = c(34, 35, 36, 37, 38)) + 
+  theme(axis.line = element_blank(),
+        panel.border = element_rect(size = .5, fill = "transparent"),
+        legend.title = element_blank(),
+        legend.background = element_rect(fill = "transparent"),
+        legend.position = c(.22,.9),
+        legend.text = element_text(face = "italic", size = 10, family = "Helvetica"),
+        legend.key.size = unit(3, units = "mm"),
+        legend.margin = margin(0,0,0,0, unit = "mm"),
+        axis.text = element_text(size = 14, family = "Helvetica"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title = element_text(size = 14, family = "Helvetica"))
+
+Fig3a.abs
+```
+
+
+```{r}
+load("1_data/SiteDisturbanceHistory_DHW.RData")
+load("1_data/reef.info.RData")
+load("1_data/psii.abs.Rdata")
+```
+
+```{r}
+#we merge data frames for thermal history metrics and geographic information with the ED50 values 
+psii.abs = psii.prediction %>% left_join(mod.sep.abs, by = c("Reef", "Species")) 
+
+#linear relationships
+col = wes_palette("GrandBudapest1", 4, type = "continuous")
+
+ggplot(psii.abs, aes(y = absolute, x = value, col = Species, fill = Species)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  scale_fill_manual(values=col) + 
+  scale_colour_manual(values=col) +
+  labs(y = "ED50", x = "Environmental metric") +
+  facet_wrap(~variable, scales = "free") +
+  theme_classic() +
+  theme(axis.line = element_blank(),
+      axis.text.x = element_text(angle = 45, hjust = 1),       
+      axis.text = element_text(size = 8, family = "Helvetica"), 
+      strip.text = element_text(size = 7)) 
+
+#save(psii.abs, file = "1_data/psii.abs.Rdata")
+```
+
+
+
+```{r}
+#looking at correlation plots for each species against the different environmental metrics. 
+psii.abs%>% 
+  group_by(variable, Species) %>% 
+  summarise(correlation = cor(value, absolute)) %>% 
+  ggplot(aes(y = variable, x = Species, fill = correlation)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "darkred", mid = "white", high = "blue3") +
+  theme_classic() + theme(axis.line = element_blank())
+```
+
+```{r}
+#again looking for variable with relationship > 0.30, but now with absolute temperatures. 
+psii.abs %>% 
+  group_by(variable) %>% 
+  summarise(correlation = cor(value, absolute))
+```
+
+```{r}
+psii.wide.abs = psii.abs %>% spread(variable, value)
+psii.wide.abs
+```
+
+
+
+We can take a subset of variables to represent the range of climate regimes and have high correlation to ED50 (R > 0.30). Here, we will include 9 environmental variables that represent various regimes. 
+```{r}
+library(corrplot)
+climate.subset.abs = c("Lat", "Long", "maxSST", "meanSST", "maxDHW", "MMM", "recent.maxDHW", "returnDHW6", "returnDHW4")
+
+clim.variables %>% dplyr::select(all_of(climate.subset.abs)) %>% 
+  cor()  %>% corrplot() 
+#most variables are highly collinear, so we will start by removing some obvious ones: latitude, meanSST, maxSST, maxDHW 
+#we want to keep in recent maxDHW (higher correlation) so we remove maxDHW 
+#
+```
+
+**Here is our selection of the 4 most important variables for describing absolute ED50s that have the lowest collinearity to one another.**  
+1. Our priority is to include MMM in the model to ensure that we test the effects of MMM on the absolute temperature ED50. 
+2. We must take our highly collinear variables with MMM, so we remove Lat, Long, maxSST, meanSST
+3. We select recent.maxDHW and omit maxDHW (collinear)
+4. We keep returnDHW6 and returnDHW4 which are not highly collinear with any other variables. 
+```{r}
+climate.subset.abs2 = c("MMM","recent.maxDHW", "returnDHW6", "returnDHW4")
+
+clim.variables %>% dplyr::select(all_of(climate.subset.abs2)) %>% 
+  cor()  %>% corrplot() 
+```
+
+**This shows correlation between absolute ED50s and the four environmental variables that will go in the model.**
+```{r}
+#re-creating the earlier plots with just 4 variables to see the relationship, and any species interactions within the environ. predictors. 
+col = wes_palette("GrandBudapest1", 4, type = "continuous")
+
+psii.abs %>% filter(variable %in% climate.subset.abs2) %>% 
+  ggplot(aes(y = absolute, x = value, col = Species, fill = Species)) +
+  geom_smooth(method = "lm") +
+  geom_point() +
+  scale_fill_manual(values=col) + 
+  scale_colour_manual(values=col) +
+  labs(y = "ED50") +
+  facet_wrap(~variable, scales = "free") +
+  theme_classic() +
+  theme(axis.line = element_blank(),
+        panel.border = element_rect(size = .5, fill = "transparent"),
+        axis.text = element_text(size = 8, family = "Helvetica"),
+        axis.title = element_text(size = 9, family = "Helvetica"))
+```
+
+## 4.3 Candidate Model Selection 
+
+### Initial dredge
+```{r}
+#we will use a dredge model that will use an iterative approach to select the model with the lowest AIC value, by putting in the 4 candidate environmental variables. 
+
+library(MuMIn)
+library(lme4)
+options(na.action = "na.fail")
+
+#creating a data frame with only the 4 variables selected 
+dredge.dat.abs1 = psii.abs %>% filter(variable %in% climate.subset.abs2) %>% 
+  spread(key = variable, value = value) %>% 
+  dplyr::select(-ends_with("CL"), -Reef, -ED50)
+
+#dredge model that accounts for species + the four variables in the model. 
+dredge.mod.abs1 <- dredge(lm(absolute~Species +., data = dredge.dat.abs1), rank = "AIC", m.lim = c(1,4))
+
+#just look at the top 10 scoring models 
+head(dredge.mod.abs1, 10)
+
+#extracting the best fit model using AIC score 
+bestmodel.abs <- get.models(dredge.mod.abs1, 1)[[1]]
+lm.dredge1.abs <- lm(bestmodel.abs, data = dredge.dat.abs1)
+summary(lm.dredge1.abs)
+ggeffects::ggeffect(lm.dredge1.abs) %>% plot
+```
+*The best model is ED50 ~ MMM + recent.maxDHW + returnDHW6 + Species* 
+- This drops out return DHW4 as a variable. 
+
+**We still need to consider the effects of any species interactions. Looking at the plots above, this could be possible for recent.maxDHW or possibly returnDHW6.**
+
+##Dredging with interaction
+```{r}
+lm.abs1 = lm(absolute~Species + MMM + recent.maxDHW + returnDHW6, data = dredge.dat.abs1)
+lm.abs2 = lm(absolute~Species * recent.maxDHW + MMM + returnDHW6, data = dredge.dat.abs1)
+lm.abs3 = lm(absolute~Species * returnDHW6 + recent.maxDHW + MMM, data = dredge.dat.abs1)
+lm.abs4 = lm(absolute~Species * MMM + returnDHW6 + recent.maxDHW, data = dredge.dat.abs1)
+lm.abs5 = lm(absolute~ MMM + returnDHW6 + recent.maxDHW, data = dredge.dat.abs1)
+
+
+AICc(lm.abs1, lm.abs2, lm.abs3, lm.abs4, lm.abs5)
+#model of best fit suggests no interaction between species and any model parameters. 
+```
+**None of the interactions between species and environmental predictors are significant. 
+
+```{r}
+vif(lm.abs1)
+```
+
+
+```{r}
+r.squaredGLMM(lm.abs2)
+```
+
+
+```{r}
+summary(lm.abs1)
+```
+
