@@ -1,4 +1,5 @@
 # CoralSea-ED50-GCB
+# DOI: 10.5281/zenodo.7145578
 Analysis of heat tolerance and ED50 from corals in the Coral Sea. 
 
 
