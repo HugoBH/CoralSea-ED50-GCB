@@ -14,9 +14,10 @@ library(ggpubr)
 library(tidyverse)
 
 load(file = "1_data/psii_metadata.RData") 
-psii = psii %>% mutate(Species = factor(Species, levels = c("A. cf humilis", "P. meandrina", "P. verrucosa")))
+psii = psii %>% 
+  mutate(Species = factor(Species, levels = c("A. cf humilis", "P. meandrina", "P. verrucosa"))) %>% 
+  distinct(Vial, Treatment, .keep_all = TRUE) #remove 6 fully duplicated rows
 head(psii)
-
 ```
 
 We've combined data from the sampling of coral nubbins, experimental data and results, with long-term environmental data into a single data frame for analysis. The data include the following information: 
